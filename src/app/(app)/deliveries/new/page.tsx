@@ -95,6 +95,7 @@ export default function NewDeliveryPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const [showSaveHelp, setShowSaveHelp] = useState(false);
+  const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
 
   const clampQtyInput = (value: string) => {
     if (!value.trim()) return "";
@@ -210,14 +211,21 @@ export default function NewDeliveryPage() {
     });
   };
 
-  const saveOutbound = async (status: DeliveryStatus) => {
+  const validateOutboundForm = () => {
     setFormError(null);
     if (!referenceNo || !outboundType || !receiver || !receiverName || !dateTime) {
       setFormError("Type, receiver, name, and date/time are required.");
-      return;
+      return false;
     }
     if (deliveryItems.length === 0) {
       setFormError("Please add at least one item.");
+      return false;
+    }
+    return true;
+  };
+
+  const saveOutbound = async (status: DeliveryStatus) => {
+    if (!validateOutboundForm()) {
       return;
     }
 
@@ -264,6 +272,7 @@ export default function NewDeliveryPage() {
           balanceAfter: nextOnhand,
           reference: referenceNo,
           destination: receiver,
+          partyName: receiverName,
           date: dateTime.slice(0, 10),
           userId: user?.uid,
           userName: user?.displayName ?? "",
@@ -353,7 +362,7 @@ export default function NewDeliveryPage() {
             <option value="Trucking">Trucking</option>
             <option value="Display">Display</option>
             <option value="Wholesale">Wholesale</option>
-            <option value="Jentech">Jentech</option>
+            <option value="30 Degress">30 Degress</option>
             <option value="Others">Others</option>
           </select>
         </label>
@@ -529,7 +538,11 @@ export default function NewDeliveryPage() {
         </button>
         <button
           type="button"
-          onClick={() => saveOutbound("Closed")}
+          onClick={() => {
+            if (validateOutboundForm()) {
+              setConfirmSaveOpen(true);
+            }
+          }}
           className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
         >
           Save
@@ -562,6 +575,38 @@ export default function NewDeliveryPage() {
             Save as Draft keeps it editable and does not affect stock or
             transaction history until you save it.
           </p>
+        </div>
+      )}
+
+      {confirmSaveOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-slate-900">Confirm Save</h3>
+            <p className="mt-3 text-sm text-slate-700">
+              If you confirm, this outbound will be finalized. Product onhand
+              quantities will be deducted, transaction history will be created, and
+              this record will be locked from further edits.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmSaveOpen(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmSaveOpen(false);
+                  void saveOutbound("Closed");
+                }}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Confirm and Save
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

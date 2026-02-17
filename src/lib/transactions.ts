@@ -16,6 +16,7 @@ export type TransactionPayload = {
   reference?: string;
   source?: string;
   destination?: string;
+  partyName?: string;
   date?: string;
   userId?: string;
   userName?: string;
@@ -44,6 +45,7 @@ export async function addTransaction(payload: TransactionPayload) {
     reference: payload.reference ?? "",
     source: payload.source ?? "",
     destination: payload.destination ?? "",
+    partyName: payload.partyName ?? "",
     date,
     userId: payload.userId ?? "",
     userName: payload.userName ?? "",

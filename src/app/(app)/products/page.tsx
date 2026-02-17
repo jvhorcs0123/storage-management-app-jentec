@@ -432,7 +432,8 @@ export default function ProductsPage() {
     setLedgerOpen(true);
   };
 
-  const getIncomingActor = (type: string, ref: string) => {
+  const getPartyName = (type: string, ref: string, partyName?: string) => {
+    if (partyName?.trim()) return partyName.trim();
     const isIncoming =
       type === "Incoming (Restock)" || type === "Incoming (Return)";
     if (!isIncoming) return "";
@@ -456,6 +457,7 @@ export default function ProductsPage() {
         qtyOut?: number;
         balanceAfter?: number;
         reference?: string;
+        partyName?: string;
       };
       return {
         id: docSnap.id,
@@ -465,7 +467,7 @@ export default function ProductsPage() {
         qtyOut: data.qtyOut ?? 0,
         balance: data.balanceAfter,
         ref: data.reference ?? "",
-        actor: getIncomingActor(data.type ?? "", data.reference ?? ""),
+        actor: getPartyName(data.type ?? "", data.reference ?? "", data.partyName),
       };
     });
     entries.sort((a, b) => b.date.localeCompare(a.date));
@@ -568,6 +570,7 @@ export default function ProductsPage() {
           balanceAfter: payload.onhandQty,
           reference: "Initial Stock",
           source: "Initial Stock",
+          partyName: "",
           userId: user?.uid,
           userName: user?.displayName ?? "",
           userEmail: user?.email ?? "",
@@ -640,8 +643,9 @@ export default function ProductsPage() {
       qtyIn: qty,
       qtyOut: 0,
       balanceAfter: incomingProduct.onhandQty + qty,
-      reference: `${incomingSource} - ${incomingByTrimmed}`,
+      reference: incomingSource,
       source: incomingSource,
+      partyName: incomingByTrimmed,
       userId: user?.uid,
       userName: user?.displayName ?? "",
       userEmail: user?.email ?? "",
@@ -686,6 +690,7 @@ export default function ProductsPage() {
       balanceAfter: outgoingProduct.onhandQty - qty,
       reference: outgoingDestination,
       destination: outgoingDestination,
+      partyName: "",
       userId: user?.uid,
       userName: user?.displayName ?? "",
       userEmail: user?.email ?? "",
@@ -748,6 +753,7 @@ export default function ProductsPage() {
           qtyOut?: number;
           balanceAfter?: number;
           reference?: string;
+          partyName?: string;
         };
         entries.push({
           id: docSnap.id,
@@ -757,7 +763,7 @@ export default function ProductsPage() {
           qtyOut: data.qtyOut ?? 0,
           balance: data.balanceAfter,
           ref: data.reference ?? "",
-          actor: getIncomingActor(data.type ?? "", data.reference ?? ""),
+          actor: getPartyName(data.type ?? "", data.reference ?? "", data.partyName),
         });
       });
 

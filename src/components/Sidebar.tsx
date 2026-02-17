@@ -130,10 +130,10 @@ export default function Sidebar({
           <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
             <Image
               src="/branding_logo.png"
-              alt="3 Degrees logo"
-              width={20}
-              height={20}
-              className="h-5 w-5 rounded-sm"
+              alt="Jentec Logo"
+              width={50}
+              height={50}
+              className="h-10 w-10 rounded-sm"
             />
             Storage
           </div>
