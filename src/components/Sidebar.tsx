@@ -51,7 +51,23 @@ const TruckIcon = <svg viewBox="0 0 24 24" className={iconBase} fill="none">
   <circle cx="17.5" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.6" />
 </svg>;
 
-const SettingsIcon = <svg viewBox="0 0 24 24" className={iconBase} fill="none">
+const InboundIcon = <svg viewBox="0 0 24 24" className={iconBase} fill="none">
+  <path
+    d="M4 13v6a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-6"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinejoin="round"
+  />
+  <path
+    d="M12 4v11m0 0 4-4m-4 4-4-4"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  />
+</svg>;
+
+const SettingsIcon =<svg viewBox="0 0 24 24" className={iconBase} fill="none">
   <path
     d="m12 8.2 2.3-1.3 2.2 1.3.1 2.6 2.3 1.3-1.2 2.3-2.6-.1-1.3 2.3-2.3-1.2-1.3-2.3-2.6.1-1.2-2.3 2.3-1.3.1-2.6 2.2-1.3L12 8.2Z"
     stroke="currentColor"
@@ -100,6 +116,7 @@ export default function Sidebar({
     () => [
       { label: "Homepage", href: "/", icon: HomeIcon },
       { label: "Products", href: "/products", icon: BoxIcon },
+      { label: "Inbound", href: "/inbound", icon: InboundIcon },
       { label: "Outbound", href: "/deliveries", icon: TruckIcon },
       { label: "Settings", href: "/settings", icon: SettingsIcon },
     ],
