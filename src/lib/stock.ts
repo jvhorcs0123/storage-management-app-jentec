@@ -122,13 +122,28 @@ export async function claimReferenceNo(
   throw new StockError("Unable to assign a reference number. Please try again.");
 }
 
-// Stock card order: newest date first, then newest entry within the same
-// date, so the balance column reads in the order the movements happened.
+// Stock card order: newest save first. Each entry's balance is computed from
+// the entry saved before it, so save order is what makes the balance column
+// read correctly, even when an entry is dated earlier (backdated). Entries
+// without a save time fall back to their date.
 export function compareLedgerNewestFirst(
   a: { date: string; createdAt: number },
   b: { date: string; createdAt: number },
 ) {
+  if (a.createdAt && b.createdAt) return b.createdAt - a.createdAt;
   return b.date.localeCompare(a.date) || b.createdAt - a.createdAt;
+}
+
+// When an entry was saved, e.g. "Nov 25, 2026 9:13 AM" (empty if unknown).
+export function savedAtLabel(createdAt: number) {
+  if (!createdAt) return "";
+  return new Date(createdAt).toLocaleString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export function createdAtMillis(value: unknown) {

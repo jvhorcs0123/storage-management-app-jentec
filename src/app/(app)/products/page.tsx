@@ -27,6 +27,7 @@ import {
   applyStockMovements,
   compareLedgerNewestFirst,
   createdAtMillis,
+  savedAtLabel,
   errorMessage,
 } from "@/lib/stock";
 
@@ -515,7 +516,10 @@ export default function ProductsPage() {
     docPdf.text(`Onhand Qty: ${row.onhandQty}`, 14, 56);
 
     const rows = entries.map((entry) => [
-      entry.date,
+      savedAtLabel(entry.createdAt)
+        ? `${entry.date}
+Saved ${savedAtLabel(entry.createdAt)}`
+        : entry.date,
       entry.type,
       entry.qtyIn ? String(entry.qtyIn) : "",
       entry.qtyOut ? String(entry.qtyOut) : "",
@@ -1591,7 +1595,14 @@ export default function ProductsPage() {
               <tbody className="divide-y divide-slate-100">
                 {ledgerRows.map((entry) => (
                   <tr key={entry.id}>
-                    <td className="px-3 py-2 text-slate-600">{entry.date}</td>
+                    <td className="px-3 py-2 text-slate-600">
+                      {entry.date}
+                      {entry.createdAt > 0 && (
+                        <span className="block text-xs text-slate-400">
+                          Saved {savedAtLabel(entry.createdAt)}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-slate-700">{entry.type}</td>
                     <td className="px-3 py-2 text-right text-emerald-600">
                       {entry.qtyIn || ""}
