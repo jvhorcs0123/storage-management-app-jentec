@@ -7,17 +7,14 @@ import {
   doc,
   getDoc,
   getDocs,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
 import { logAction } from "@/lib/logs";
 import {
   INBOUND_COLLECTION,
-  closeInbound,
   getNextInboundRef,
+  saveInbound as saveInboundRecord,
   nowLocalDateTime,
   partyLabel,
   type InboundDoc,
@@ -251,9 +248,6 @@ export default function InboundForm({ inboundId }: { inboundId?: string }) {
   const saveInbound = async (status: InboundStatus) => {
     if (!validateForm() || saving) return;
     setSaving(true);
-    const inboundRef = inboundId
-      ? doc(db, INBOUND_COLLECTION, inboundId)
-      : doc(collection(db, INBOUND_COLLECTION));
     const data = {
       referenceNo,
       inYear,
@@ -265,25 +259,7 @@ export default function InboundForm({ inboundId }: { inboundId?: string }) {
     };
 
     try {
-      if (status === "Closed") {
-        await closeInbound(inboundRef, data, user);
-      } else {
-        if (inboundId) {
-          await updateDoc(inboundRef, { ...data, status });
-        } else {
-          await setDoc(inboundRef, {
-            ...data,
-            status,
-            createdAt: serverTimestamp(),
-          });
-        }
-        await logAction(user, {
-          action: `Saved draft ${referenceNo}`,
-          entity: "inbound",
-          entityId: inboundRef.id,
-          entityName: referenceNo,
-        });
-      }
+      await saveInboundRecord(inboundId ?? null, data, status, user);
       router.push("/inbound");
     } catch (error) {
       setFormError(

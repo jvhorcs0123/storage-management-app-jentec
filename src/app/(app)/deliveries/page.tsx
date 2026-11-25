@@ -10,6 +10,9 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
+  query,
+  where,
+  type QuerySnapshot,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
@@ -151,6 +154,22 @@ function Modal({
   );
 }
 
+const periodOptions = [
+  { days: 30, label: "Last 30 days" },
+  { days: 60, label: "Last 60 days" },
+  { days: 180, label: "Last 6 months" },
+  { days: 365, label: "Last 12 months" },
+  { days: 0, label: "All time" },
+];
+
+// Local date N days ago as YYYY-MM-DD, comparable with the stored dateTime.
+function daysAgo(days: number) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  const offsetMs = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
 export default function DeliveriesPage() {
   const { user, loading } = useAuth();
   const pageSize = 10;
@@ -165,6 +184,7 @@ export default function DeliveriesPage() {
   const [statusFilter, setStatusFilter] = useState<"All" | "Draft" | "Closed">(
     "All",
   );
+  const [periodDays, setPeriodDays] = useState(60);
 
   const filteredOutbounds = useMemo(() => {
     if (statusFilter === "All") return outbounds;
@@ -203,17 +223,43 @@ export default function DeliveriesPage() {
 
   useEffect(() => {
     if (!user) return;
+    // Load only the selected period (Firestore bills per document returned),
+    // plus every draft regardless of age so none get forgotten.
     const deliveriesRef = collection(db, "deliveries");
-    const unsubscribe = onSnapshot(deliveriesRef, (snapshot) => {
-      const rows = snapshot.docs.map((docSnap) => {
-        const data = docSnap.data() as Omit<OutboundRow, "id">;
-        return { id: docSnap.id, ...data };
-      });
+    let periodRows: OutboundRow[] = [];
+    let draftRows: OutboundRow[] = [];
+    const publish = () => {
+      const byId = new Map<string, OutboundRow>();
+      [...periodRows, ...draftRows].forEach((row) => byId.set(row.id, row));
+      const rows = Array.from(byId.values());
       rows.sort((a, b) => b.dateTime?.localeCompare(a.dateTime ?? "") ?? 0);
       setOutbounds(rows);
+    };
+    const toRows = (snapshot: QuerySnapshot) =>
+      snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<OutboundRow, "id">),
+      }));
+
+    const periodQuery = periodDays
+      ? query(deliveriesRef, where("dateTime", ">=", daysAgo(periodDays)))
+      : deliveriesRef;
+    const unsubscribePeriod = onSnapshot(periodQuery, (snapshot) => {
+      periodRows = toRows(snapshot);
+      publish();
     });
-    return () => unsubscribe();
-  }, [user]);
+    const unsubscribeDrafts = onSnapshot(
+      query(deliveriesRef, where("status", "==", "Draft")),
+      (snapshot) => {
+        draftRows = toRows(snapshot);
+        publish();
+      },
+    );
+    return () => {
+      unsubscribePeriod();
+      unsubscribeDrafts();
+    };
+  }, [user, periodDays]);
 
   const openProductsModal = (row: OutboundRow) => {
     setSelectedOutbound(row);
@@ -322,6 +368,20 @@ export default function DeliveriesPage() {
                   <option value="All">All</option>
                   <option value="Draft">Draft</option>
                   <option value="Closed">Closed</option>
+                </select>
+              </label>
+              <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600">
+                Period
+                <select
+                  value={periodDays}
+                  onChange={(event) => setPeriodDays(Number(event.target.value))}
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600"
+                >
+                  {periodOptions.map((option) => (
+                    <option key={option.days} value={option.days}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <Link

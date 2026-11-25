@@ -1,7 +1,5 @@
 import {
-  collection,
   doc,
-  getDocs,
   runTransaction,
   serverTimestamp,
   type DocumentReference,
@@ -9,7 +7,12 @@ import {
 import type { User } from "firebase/auth";
 import { db } from "@/lib/firebase";
 import { logAction } from "@/lib/logs";
-import { addTransaction } from "@/lib/transactions";
+import {
+  applyStockMovements,
+  claimReferenceNo,
+  getNextSeries,
+  StockError,
+} from "@/lib/stock";
 
 export const INBOUND_COLLECTION = "inbounds";
 
@@ -53,15 +56,7 @@ export function generateInboundRefNo(year: string, series: number) {
 
 export async function getNextInboundRef() {
   const year = new Date().getFullYear().toString().slice(-2);
-  const snap = await getDocs(collection(db, INBOUND_COLLECTION));
-  let maxSeries = 0;
-  snap.docs.forEach((docSnap) => {
-    const data = docSnap.data() as { inYear?: string; series?: number };
-    if (data.inYear === year && typeof data.series === "number") {
-      maxSeries = Math.max(maxSeries, data.series);
-    }
-  });
-  const series = maxSeries + 1;
+  const series = await getNextSeries(INBOUND_COLLECTION, "REFNO-IN", year);
   return { year, series, referenceNo: generateInboundRefNo(year, series) };
 }
 
@@ -72,92 +67,107 @@ export function nowLocalDateTime() {
   return new Date(now.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
+
 /**
- * Finalizes an inbound: applies the Incoming Stocks rules to every product in
- * one atomic Firestore transaction (Restock adds to onhand and total, Returns
- * adds to onhand only), then writes per-product transaction history and logs.
+ * Saves an inbound as a draft or finalizes it, in one Firestore transaction.
+ * Finalizing applies the Incoming Stocks rules (Restock adds to onhand and
+ * total, Returns adds to onhand only) using onhand read at save time, and
+ * writes the stock card entries in the same transaction. A new inbound claims
+ * its reference number here: the number on the form is a suggestion, and if
+ * someone else saved it first the next free number is used.
  */
-export async function closeInbound(
-  inboundRef: DocumentReference,
+export async function saveInbound(
+  existingId: string | null,
   data: Omit<InboundDoc, "status">,
+  status: InboundStatus,
   user: User | null,
 ) {
-  const balances = await runTransaction(db, async (tx) => {
-    const existing = await tx.get(inboundRef);
-    if (existing.exists() && existing.data().status === "Closed") {
-      throw new Error(`${data.referenceNo} has already been saved.`);
+  const saved = await runTransaction(db, async (txn) => {
+    let inboundRef: DocumentReference;
+    let referenceNo = data.referenceNo;
+    let series = data.series;
+    if (existingId) {
+      inboundRef = doc(db, INBOUND_COLLECTION, existingId);
+      const existing = await txn.get(inboundRef);
+      if (!existing.exists()) throw new StockError("Inbound record not found.");
+      if ((existing.data().status ?? "Closed") !== "Draft") {
+        throw new StockError(`${data.referenceNo} has already been saved.`);
+      }
+    } else {
+      const claimed = await claimReferenceNo(
+        txn,
+        INBOUND_COLLECTION,
+        "REFNO-IN",
+        data.inYear,
+        data.series,
+      );
+      inboundRef = claimed.ref;
+      referenceNo = claimed.referenceNo;
+      series = claimed.series;
     }
 
-    const productRefs = data.items.map((item) =>
-      doc(db, "products", item.productId),
-    );
-    const productSnaps = await Promise.all(productRefs.map((ref) => tx.get(ref)));
+    if (status === "Closed") {
+      await applyStockMovements(
+        txn,
+        data.items.map((item) => ({
+          productId: item.productId,
+          productName: item.productName,
+          category: item.category,
+          sku: item.sku,
+          unit: item.unit,
+          type: transactionType(data.source),
+          qtyIn: item.quantity,
+          qtyOut: 0,
+          raiseTotal: data.source === "Restock",
+          reference: referenceNo,
+          source: data.source,
+          partyName: data.partyName,
+          date: data.dateTime.slice(0, 10),
+          userId: user?.uid,
+          userName: user?.displayName ?? "",
+          userEmail: user?.email ?? "",
+        })),
+      );
+    }
 
-    const nextBalances = new Map<string, number>();
-    data.items.forEach((item, index) => {
-      const snap = productSnaps[index];
-      if (!snap.exists()) {
-        throw new Error(`${item.productName} no longer exists in Products.`);
-      }
-      const current = snap.data() as { onhandQty?: number; totalQty?: number };
-      const onhandQty = (current.onhandQty ?? 0) + item.quantity;
-      const updates: Record<string, number> = { onhandQty };
-      if (data.source === "Restock") {
-        updates.totalQty = (current.totalQty ?? 0) + item.quantity;
-      }
-      tx.update(productRefs[index], updates);
-      nextBalances.set(item.productId, onhandQty);
-    });
-
-    tx.set(
-      inboundRef,
-      {
-        ...data,
-        status: "Closed",
-        ...(existing.exists() ? {} : { createdAt: serverTimestamp() }),
-        closedAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
-    return nextBalances;
+    const record = {
+      ...data,
+      referenceNo,
+      series,
+      status,
+      ...(status === "Closed" ? { closedAt: serverTimestamp() } : {}),
+    };
+    if (existingId) {
+      txn.update(inboundRef, record);
+    } else {
+      txn.set(inboundRef, { ...record, createdAt: serverTimestamp() });
+    }
+    return { id: inboundRef.id, referenceNo };
   });
 
-  for (const item of data.items) {
-    await addTransaction({
-      productId: item.productId,
-      productName: item.productName,
-      category: item.category,
-      sku: item.sku,
-      unit: item.unit,
-      type: transactionType(data.source),
-      qtyIn: item.quantity,
-      qtyOut: 0,
-      balanceAfter: balances.get(item.productId),
-      reference: data.referenceNo,
-      source: data.source,
-      partyName: data.partyName,
-      date: data.dateTime.slice(0, 10),
-      userId: user?.uid,
-      userName: user?.displayName ?? "",
-      userEmail: user?.email ?? "",
-    });
-    await logAction(user, {
-      action: `${data.source === "Restock" ? "Restocked" : "Returned"} ${item.productName}`,
-      entity: "product",
-      entityId: item.productId,
-      entityName: item.productName,
-      details: {
-        qty: item.quantity,
-        source: data.source,
-        by: data.partyName,
-        reference: data.referenceNo,
-      },
-    });
+  if (status === "Closed") {
+    for (const item of data.items) {
+      await logAction(user, {
+        action: `${data.source === "Restock" ? "Restocked" : "Returned"} ${item.productName}`,
+        entity: "product",
+        entityId: item.productId,
+        entityName: item.productName,
+        details: {
+          qty: item.quantity,
+          source: data.source,
+          by: data.partyName,
+          reference: saved.referenceNo,
+        },
+      });
+    }
   }
   await logAction(user, {
-    action: `Added ${data.referenceNo}`,
+    action:
+      status === "Closed"
+        ? `Added ${saved.referenceNo}`
+        : `Saved draft ${saved.referenceNo}`,
     entity: "inbound",
-    entityId: inboundRef.id,
-    entityName: data.referenceNo,
+    entityId: saved.id,
+    entityName: saved.referenceNo,
   });
 }

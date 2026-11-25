@@ -1,6 +1,12 @@
 import { initializeApp, getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  type Firestore,
+} from "firebase/firestore";
 
 type FirebaseConfig = {
   apiKey: string;
@@ -51,4 +57,22 @@ const firebaseConfig = injectedConfig ?? envConfig;
 const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// In the browser, keep a local cache (IndexedDB, shared across tabs) so a
+// listener reopened within ~30 minutes is billed only for documents that
+// changed, not the whole result again. The server render has no IndexedDB.
+function createFirestore(): Firestore {
+  if (typeof window === "undefined") return getFirestore(app);
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    });
+  } catch {
+    // Already initialized (e.g. after a hot reload).
+    return getFirestore(app);
+  }
+}
+
+export const db = createFirestore();

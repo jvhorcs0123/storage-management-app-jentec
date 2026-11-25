@@ -23,14 +23,14 @@ export type TransactionPayload = {
   userEmail?: string;
 };
 
-export async function addTransaction(payload: TransactionPayload) {
+export function buildTransactionData(payload: TransactionPayload) {
   const qtyIn = payload.qtyIn ?? 0;
   const qtyOut = payload.qtyOut ?? 0;
   const price = payload.price ?? 0;
   const total = payload.total ?? (qtyIn > 0 ? qtyIn * price : qtyOut * price);
   const date = payload.date ?? new Date().toISOString().slice(0, 10);
 
-  await addDoc(collection(db, "transactions"), {
+  return {
     productId: payload.productId ?? "",
     productName: payload.productName,
     category: payload.category ?? "",
@@ -51,5 +51,9 @@ export async function addTransaction(payload: TransactionPayload) {
     userName: payload.userName ?? "",
     userEmail: payload.userEmail ?? "",
     createdAt: serverTimestamp(),
-  });
+  };
+}
+
+export async function addTransaction(payload: TransactionPayload) {
+  await addDoc(collection(db, "transactions"), buildTransactionData(payload));
 }
