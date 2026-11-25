@@ -4,16 +4,19 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   collection,
-  doc,
   getDocs,
+  runTransaction,
   serverTimestamp,
-  setDoc,
-  writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
 import { logAction } from "@/lib/logs";
-import { addTransaction } from "@/lib/transactions";
+import {
+  applyStockMovements,
+  claimReferenceNo,
+  errorMessage,
+  getNextSeries,
+} from "@/lib/stock";
 
 type ProductRow = {
   id: string;
@@ -107,8 +110,11 @@ export default function NewDeliveryPage() {
   useEffect(() => {
     if (!user) return;
     const loadData = async () => {
-      const productSnap = await getDocs(collection(db, "products"));
-      const deliverySnap = await getDocs(collection(db, "deliveries"));
+      const year = new Date().getFullYear().toString().slice(-2);
+      const [productSnap, nextSeries] = await Promise.all([
+        getDocs(collection(db, "products")),
+        getNextSeries("deliveries", "REFNO-OUT", year),
+      ]);
 
       const productRows = productSnap.docs.map((docSnap) => ({
         id: docSnap.id,
@@ -117,15 +123,7 @@ export default function NewDeliveryPage() {
       productRows.sort((a, b) => a.product.localeCompare(b.product));
       setProducts(productRows);
 
-      const year = new Date().getFullYear().toString().slice(-2);
-      let maxSeries = 0;
-      deliverySnap.docs.forEach((docSnap) => {
-        const data = docSnap.data() as { outYear?: string; series?: number };
-        if (data.outYear === year && typeof data.series === "number") {
-          maxSeries = Math.max(maxSeries, data.series);
-        }
-      });
-      setReferenceNo(generateRefNo(year, maxSeries + 1));
+      setReferenceNo(generateRefNo(year, nextSeries));
       const now = new Date();
       setDateTime(now.toISOString().slice(0, 16));
     };
@@ -229,82 +227,70 @@ export default function NewDeliveryPage() {
       return;
     }
 
-    const year = new Date().getFullYear().toString().slice(-2);
-    const series = Number(referenceNo.split("-").pop());
-    const outboundRef = doc(collection(db, "deliveries"));
+    const [, , year, seriesText] = referenceNo.split("-");
 
-    if (status === "Closed") {
-      const batch = writeBatch(db);
-      deliveryItems.forEach((item) => {
-        const product = products.find((row) => row.id === item.productId);
-        if (!product) return;
-        batch.update(doc(db, "products", product.id), {
-          onhandQty: product.onhandQty - item.quantity,
+    let saved: { id: string; referenceNo: string };
+    try {
+      saved = await runTransaction(db, async (txn) => {
+        // The number shown on the form is a suggestion; if someone else saved
+        // it first, this takes the next free one.
+        const claimed = await claimReferenceNo(
+          txn,
+          "deliveries",
+          "REFNO-OUT",
+          year,
+          Number(seriesText),
+        );
+        if (status === "Closed") {
+          await applyStockMovements(
+            txn,
+            deliveryItems.map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              category: item.category,
+              unit: item.unit,
+              type: `Outgoing (${outboundType})`,
+              qtyIn: 0,
+              qtyOut: item.quantity,
+              reference: claimed.referenceNo,
+              destination: receiver,
+              partyName: receiverName,
+              date: dateTime.slice(0, 10),
+              userId: user?.uid,
+              userName: user?.displayName ?? "",
+              userEmail: user?.email ?? "",
+            })),
+          );
+        }
+        txn.set(claimed.ref, {
+          referenceNo: claimed.referenceNo,
+          outYear: year,
+          series: claimed.series,
+          outboundType,
+          receiver,
+          receiverName,
+          dateTime,
+          items: deliveryItems,
+          status,
+          createdAt: serverTimestamp(),
         });
+        return { id: claimed.ref.id, referenceNo: claimed.referenceNo };
       });
-
-      batch.set(outboundRef, {
-        referenceNo,
-        outYear: year,
-        series,
-        outboundType,
-        receiver,
-        receiverName,
-        dateTime,
-        items: deliveryItems,
-        status,
-        createdAt: serverTimestamp(),
-      });
-
-      await batch.commit();
-      for (const item of deliveryItems) {
-        const product = products.find((row) => row.id === item.productId);
-        if (!product) continue;
-        const nextOnhand = product.onhandQty - item.quantity;
-        await addTransaction({
-          productId: item.productId,
-          productName: item.productName,
-          category: item.category,
-          unit: item.unit,
-          type: `Outgoing (${outboundType})`,
-          qtyIn: 0,
-          qtyOut: item.quantity,
-          balanceAfter: nextOnhand,
-          reference: referenceNo,
-          destination: receiver,
-          partyName: receiverName,
-          date: dateTime.slice(0, 10),
-          userId: user?.uid,
-          userName: user?.displayName ?? "",
-          userEmail: user?.email ?? "",
-        });
-      }
-      await logAction(user, {
-        action: `Added ${referenceNo}`,
-        entity: "outbound",
-        entityId: outboundRef.id,
-        entityName: referenceNo,
-      });
-    } else {
-      await setDoc(outboundRef, {
-        referenceNo,
-        outYear: year,
-        series,
-        outboundType,
-        receiver,
-        receiverName,
-        dateTime,
-        items: deliveryItems,
-        status,
-        createdAt: serverTimestamp(),
-      });
-      await logAction(user, {
-        action: `Saved draft ${referenceNo}`,
-        entity: "outbound",
-        entityId: outboundRef.id,
-        entityName: referenceNo,
-      });
+    } catch (error) {
+      setFormError(
+        errorMessage(error, "Unable to save outbound. Please try again."),
+      );
+      return;
     }
+    await logAction(user, {
+      action:
+        status === "Closed"
+          ? `Added ${saved.referenceNo}`
+          : `Saved draft ${saved.referenceNo}`,
+      entity: "outbound",
+      entityId: saved.id,
+      entityName: saved.referenceNo,
+    });
     router.push("/deliveries");
   };
 

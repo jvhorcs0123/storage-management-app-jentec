@@ -11,6 +11,7 @@ import {
   query,
   setDoc,
   where,
+  type QueryConstraint,
 } from "firebase/firestore";
 import {
   EmailAuthProvider,
@@ -65,6 +66,26 @@ type PendingRow = {
 };
 
 type TransactionTypeFilter = "all" | "incoming" | "outgoing";
+
+// Firestore range filters for a from/to date filter; an empty side is open.
+// With `endExclusive`, `to` is the first value after the range.
+function dateRangeConstraints<T extends string | Date>(
+  field: string,
+  from: T | "" | undefined,
+  to: T | "" | undefined,
+  endExclusive = false,
+): QueryConstraint[] {
+  const constraints: QueryConstraint[] = [];
+  if (from) constraints.push(where(field, ">=", from));
+  if (to) constraints.push(where(field, endExclusive ? "<" : "<=", to));
+  return constraints;
+}
+
+function nextDay(isoDate: string) {
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -153,8 +174,14 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!user) return;
+    // Only fetch the selected dates: Firestore bills one read per document
+    // returned, and the full history is thousands of documents.
     const transactionsRef = collection(db, "transactions");
-    const transactionsQuery = query(transactionsRef, orderBy("createdAt", "desc"));
+    const transactionsQuery = query(
+      transactionsRef,
+      ...dateRangeConstraints("date", txnDateFilter.from, txnDateFilter.to),
+      orderBy("date", "desc"),
+    );
     const unsubscribe = onSnapshot(transactionsQuery, (snapshot) => {
       const rows: TransactionRow[] = snapshot.docs.map((docSnap) => {
         const data = docSnap.data() as {
@@ -200,12 +227,22 @@ export default function SettingsPage() {
       setTransactionRows(rows);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, txnDateFilter.from, txnDateFilter.to]);
 
   useEffect(() => {
     if (!user) return;
+    // Log dates are shown in UTC (toISOString below), so the range is UTC too.
     const logsRef = collection(db, "userLogs");
-    const logsQuery = query(logsRef, orderBy("createdAt", "desc"));
+    const logsQuery = query(
+      logsRef,
+      ...dateRangeConstraints(
+        "createdAt",
+        logsDateFilter.from && new Date(`${logsDateFilter.from}T00:00:00Z`),
+        logsDateFilter.to && new Date(`${nextDay(logsDateFilter.to)}T00:00:00Z`),
+        true,
+      ),
+      orderBy("createdAt", "desc"),
+    );
     const unsubscribe = onSnapshot(logsQuery, (snapshot) => {
       const rows: LogRow[] = snapshot.docs.map((docSnap) => {
         const data = docSnap.data() as {
@@ -235,7 +272,7 @@ export default function SettingsPage() {
       setLogs(rows);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, logsDateFilter.from, logsDateFilter.to]);
 
   useEffect(() => {
     if (!user || profileUserType !== "admin") return;

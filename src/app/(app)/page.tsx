@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   doc,
+  getCountFromServer,
   limit,
   onSnapshot,
   orderBy,
   query,
+  where,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
@@ -37,7 +39,9 @@ type LogRow = {
 export default function DashboardPage() {
   const { user, loading } = useAuth();
   const [products, setProducts] = useState<ProductRow[]>([]);
-  const [deliveries, setDeliveries] = useState<DeliveryRow[]>([]);
+  const [recentOutbound, setRecentOutbound] = useState<DeliveryRow[]>([]);
+  const [totalOutbound, setTotalOutbound] = useState(0);
+  const [outboundThisMonth, setOutboundThisMonth] = useState(0);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [userType, setUserType] = useState<"admin" | "employee">("employee");
   const [showAllActivity, setShowAllActivity] = useState(false);
@@ -68,19 +72,42 @@ export default function DashboardPage() {
       setProducts(rows);
     });
 
-    const unsubscribeDeliveries = onSnapshot(deliveriesRef, (snapshot) => {
+    // Only the 5 most recent deliveries are shown; the totals come from count
+    // queries (about 1 read per 1,000 documents) rather than loading them all.
+    const recentQuery = query(deliveriesRef, orderBy("dateTime", "desc"), limit(5));
+    const unsubscribeDeliveries = onSnapshot(recentQuery, (snapshot) => {
       const rows = snapshot.docs.map((docSnap) => {
         const data = docSnap.data() as Omit<DeliveryRow, "id">;
         return { id: docSnap.id, ...data };
       });
-      setDeliveries(rows);
+      setRecentOutbound(rows);
     });
+
+    const [year, month] = monthKey.split("-").map(Number);
+    const nextMonthKey = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 7);
+    Promise.all([
+      getCountFromServer(deliveriesRef),
+      getCountFromServer(
+        query(
+          deliveriesRef,
+          where("dateTime", ">=", monthKey),
+          where("dateTime", "<", nextMonthKey),
+        ),
+      ),
+    ])
+      .then(([total, thisMonth]) => {
+        setTotalOutbound(total.data().count);
+        setOutboundThisMonth(thisMonth.data().count);
+      })
+      .catch(() => {
+        // Leave the counts at 0 if they can't be loaded.
+      });
 
     return () => {
       unsubscribeProducts();
       unsubscribeDeliveries();
     };
-  }, [user]);
+  }, [user, monthKey]);
 
   useEffect(() => {
     if (!user || userType !== "admin") {
@@ -102,10 +129,6 @@ export default function DashboardPage() {
   const totalProducts = products.length;
   const lowStockCount = products.filter(
     (row) => (row.onhandQty ?? 0) <= lowStockThreshold,
-  ).length;
-  const totalOutbound = deliveries.length;
-  const outboundThisMonth = deliveries.filter((row) =>
-    row.dateTime?.startsWith(monthKey),
   ).length;
 
   const totalOnhandUnits = useMemo(
@@ -129,12 +152,6 @@ export default function DashboardPage() {
       .map(([category, qty]) => ({ category, qty }))
       .sort((a, b) => b.qty - a.qty);
   }, [products]);
-
-  const recentOutbound = useMemo(() => {
-    return [...deliveries]
-      .sort((a, b) => (b.dateTime ?? "").localeCompare(a.dateTime ?? ""))
-      .slice(0, 5);
-  }, [deliveries]);
 
   const activityRows = useMemo(() => {
     if (showAllActivity) return logs;

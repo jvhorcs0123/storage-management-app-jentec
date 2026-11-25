@@ -7,13 +7,12 @@ import {
   doc,
   getDoc,
   getDocs,
-  updateDoc,
-  writeBatch,
+  runTransaction,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
 import { logAction } from "@/lib/logs";
-import { addTransaction } from "@/lib/transactions";
+import { applyStockMovements, errorMessage, StockError } from "@/lib/stock";
 
 type ProductRow = {
   id: string;
@@ -87,9 +86,6 @@ export default function EditDeliveryPage() {
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [deliveryItems, setDeliveryItems] = useState<DeliveryItem[]>([]);
   const [originalItems, setOriginalItems] = useState<DeliveryItem[]>([]);
-  const [originalStatus, setOriginalStatus] = useState<"Draft" | "Closed">(
-    "Draft",
-  );
   const [referenceNo, setReferenceNo] = useState("");
   const [outboundType, setOutboundType] = useState("Trucking");
   const [receiver, setReceiver] = useState("Cashier");
@@ -148,7 +144,6 @@ export default function EditDeliveryPage() {
         setDateTime(delivery.dateTime ?? "");
         setDeliveryItems(delivery.items ?? []);
         setOriginalItems(delivery.items ?? []);
-        setOriginalStatus(status);
       } catch {
         setPageError("Unable to load outbound record.");
       }
@@ -264,94 +259,50 @@ export default function EditDeliveryPage() {
     if (!id) return;
 
     const deliveryRef = doc(db, "deliveries", id);
-    const movementEntries: Array<{
-      product: ProductRow;
-      qtyIn: number;
-      qtyOut: number;
-      balanceAfter: number;
-    }> = [];
     if (status === "Closed") {
-      const batch = writeBatch(db);
-      const oldQtyMap = new Map<string, number>();
-      if (originalStatus === "Closed") {
-        originalItems.forEach((item) => {
-          oldQtyMap.set(
-            item.productId,
-            (oldQtyMap.get(item.productId) ?? 0) + item.quantity,
+      try {
+        await runTransaction(db, async (txn) => {
+          // Re-read the record so two tabs can't finalize the same draft twice.
+          const deliverySnap = await txn.get(deliveryRef);
+          if (!deliverySnap.exists()) {
+            throw new StockError("Outbound record not found.");
+          }
+          if ((deliverySnap.data().status ?? "Closed") !== "Draft") {
+            throw new StockError("This outbound has already been finalized.");
+          }
+          await applyStockMovements(
+            txn,
+            deliveryItems.map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              category: item.category,
+              unit: item.unit,
+              type: `Outgoing (${outboundType} Edit)`,
+              qtyIn: 0,
+              qtyOut: item.quantity,
+              reference: referenceNo,
+              destination: receiver,
+              partyName: receiverName,
+              date: dateTime.slice(0, 10),
+              userId: user?.uid,
+              userName: user?.displayName ?? "",
+              userEmail: user?.email ?? "",
+            })),
           );
+          txn.update(deliveryRef, {
+            outboundType,
+            receiver,
+            receiverName,
+            dateTime,
+            items: deliveryItems,
+            status,
+          });
         });
-      }
-
-      const newQtyMap = new Map<string, number>();
-      deliveryItems.forEach((item) => {
-        newQtyMap.set(
-          item.productId,
-          (newQtyMap.get(item.productId) ?? 0) + item.quantity,
+      } catch (error) {
+        setFormError(
+          errorMessage(error, "Unable to save outbound. Please try again."),
         );
-      });
-
-      for (const product of products) {
-        const oldQty = oldQtyMap.get(product.id) ?? 0;
-        const newQty = newQtyMap.get(product.id) ?? 0;
-        if (oldQty === 0 && newQty === 0) continue;
-        const nextOnhand = product.onhandQty + oldQty - newQty;
-        if (nextOnhand < 0) {
-          setFormError(
-            `Insufficient onhand for ${product.product}. Adjust quantities.`,
-          );
-          return;
-        }
-        const delta = newQty - oldQty;
-        if (delta > 0) {
-          movementEntries.push({
-            product,
-            qtyIn: 0,
-            qtyOut: delta,
-            balanceAfter: nextOnhand,
-          });
-        } else if (delta < 0) {
-          movementEntries.push({
-            product,
-            qtyIn: Math.abs(delta),
-            qtyOut: 0,
-            balanceAfter: nextOnhand,
-          });
-        }
-        batch.update(doc(db, "products", product.id), { onhandQty: nextOnhand });
-      }
-
-      batch.update(deliveryRef, {
-        outboundType,
-        receiver,
-        receiverName,
-        dateTime,
-        items: deliveryItems,
-        status,
-      });
-
-      await batch.commit();
-      for (const entry of movementEntries) {
-        await addTransaction({
-          productId: entry.product.id,
-          productName: entry.product.product,
-          category: entry.product.category,
-          unit: entry.product.unit,
-          type:
-            entry.qtyOut > 0
-              ? `Outgoing (${outboundType} Edit)`
-              : "Incoming (Outbound Adjustment)",
-          qtyIn: entry.qtyIn,
-          qtyOut: entry.qtyOut,
-          balanceAfter: entry.balanceAfter,
-          reference: referenceNo,
-          destination: receiver,
-          partyName: receiverName,
-          source: entry.qtyIn > 0 ? "Outbound Adjustment" : "",
-          date: dateTime.slice(0, 10),
-          userId: user?.uid,
-          userName: user?.displayName ?? "",
-          userEmail: user?.email ?? "",
-        });
+        return;
       }
       await logAction(user, {
         action: `Edited ${referenceNo}`,
@@ -360,14 +311,30 @@ export default function EditDeliveryPage() {
         entityName: referenceNo,
       });
     } else {
-      await updateDoc(deliveryRef, {
-        outboundType,
-        receiver,
-        receiverName,
-        dateTime,
-        items: deliveryItems,
-        status,
-      });
+      try {
+        await runTransaction(db, async (txn) => {
+          const deliverySnap = await txn.get(deliveryRef);
+          if (!deliverySnap.exists()) {
+            throw new StockError("Outbound record not found.");
+          }
+          if ((deliverySnap.data().status ?? "Closed") !== "Draft") {
+            throw new StockError("This outbound has already been finalized.");
+          }
+          txn.update(deliveryRef, {
+            outboundType,
+            receiver,
+            receiverName,
+            dateTime,
+            items: deliveryItems,
+            status,
+          });
+        });
+      } catch (error) {
+        setFormError(
+          errorMessage(error, "Unable to save outbound. Please try again."),
+        );
+        return;
+      }
       await logAction(user, {
         action: `Saved draft ${referenceNo}`,
         entity: "outbound",
